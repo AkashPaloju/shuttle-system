@@ -49,11 +49,13 @@ const ManageShuttles = () => {
   const [shuttles, setShuttles] = useState([]);
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [operationLoading, setOperationLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [selectedShuttle, setSelectedShuttle] = useState(null);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+  const [formErrors, setFormErrors] = useState({});
 
   // Form state
   const [formData, setFormData] = useState({
@@ -64,18 +66,34 @@ const ManageShuttles = () => {
     currentLocation: ''
   });
 
+  // Fetch data on component mount
+  useEffect(() => {
+    const fetchData = async () => {
+      await Promise.all([fetchShuttles(), fetchRoutes()]);
+    };
+    fetchData();
+  }, []);
+
   // Fetch shuttles from API
   const fetchShuttles = async () => {
     setLoading(true);
     try {
       const token = localStorage.getItem("token");
+      if (!token) {
+        showSnackbar('Authentication token not found', 'error');
+        setLoading(false);
+        return;
+      }
+
       const response = await axios.get(`${API_BASE_URL}/shuttle`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setShuttles(response.data.shuttles || []);
-      setLoading(false);
     } catch (error) {
-      showSnackbar('Error fetching shuttles', 'error');
+      console.error('Error fetching shuttles:', error);
+      const message = error.response?.data?.msg || 'Error fetching shuttles';
+      showSnackbar(message, 'error');
+    } finally {
       setLoading(false);
     }
   };
@@ -84,12 +102,19 @@ const ManageShuttles = () => {
   const fetchRoutes = async () => {
     try {
       const token = localStorage.getItem("token");
+      if (!token) {
+        showSnackbar('Authentication token not found', 'error');
+        return;
+      }
+
       const response = await axios.get(`${API_BASE_URL}/route`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       setRoutes(response.data.routes || []);
     } catch (error) {
-      showSnackbar('Error fetching routes', 'error');
+      console.error('Error fetching routes:', error);
+      const message = error.response?.data?.msg || 'Error fetching routes';
+      showSnackbar(message, 'error');
     }
   };
 
@@ -97,8 +122,39 @@ const ManageShuttles = () => {
     setSnackbar({ open: true, message, severity });
   };
 
+  const handleCloseSnackbar = () => {
+    setSnackbar(prev => ({ ...prev, open: false }));
+  };
+
+  // Form validation
+  const validateForm = () => {
+    const errors = {};
+    
+    if (!formData.shuttleNumber.trim()) {
+      errors.shuttleNumber = 'Shuttle number is required';
+    }
+    
+    if (!formData.capacity || isNaN(formData.capacity) || parseInt(formData.capacity) <= 0) {
+      errors.capacity = 'Capacity must be a positive number';
+    }
+
+    // Check for duplicate shuttle numbers (only for new shuttles or when changing number)
+    const isDuplicate = shuttles.some(shuttle => 
+      shuttle.shuttleNumber === formData.shuttleNumber.trim() && 
+      (!editMode || shuttle._id !== selectedShuttle._id)
+    );
+    
+    if (isDuplicate) {
+      errors.shuttleNumber = 'Shuttle number already exists';
+    }
+
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const handleAddShuttle = () => {
     setEditMode(false);
+    setSelectedShuttle(null);
     setFormData({
       shuttleNumber: '',
       capacity: '',
@@ -106,6 +162,7 @@ const ManageShuttles = () => {
       active: true,
       currentLocation: ''
     });
+    setFormErrors({});
     setDialogOpen(true);
   };
 
@@ -119,6 +176,7 @@ const ManageShuttles = () => {
       active: shuttle.active,
       currentLocation: shuttle.currentLocation || ''
     });
+    setFormErrors({});
     setDialogOpen(true);
   };
 
@@ -127,25 +185,38 @@ const ManageShuttles = () => {
     setDeleteDialogOpen(true);
   };
 
+  const handleCloseDialog = () => {
+    setDialogOpen(false);
+    setFormErrors({});
+  };
+
   // Add or update shuttle
   const handleSubmit = async () => {
+    if (!validateForm()) {
+      return;
+    }
+
+    setOperationLoading(true);
     try {
-      if (!formData.shuttleNumber || !formData.capacity) {
-        showSnackbar('Please fill in all required fields', 'error');
+      const token = localStorage.getItem("token");
+      if (!token) {
+        showSnackbar('Authentication token not found', 'error');
         return;
       }
-      const token = localStorage.getItem("token");
+
+      const requestData = {
+        shuttleNumber: formData.shuttleNumber.trim(),
+        capacity: parseInt(formData.capacity),
+        currentRoute: formData.currentRoute || null,
+        active: formData.active,
+        currentLocation: formData.currentLocation.trim() || null,
+      };
+
       if (editMode) {
         // Update shuttle
         await axios.put(
           `${API_BASE_URL}/shuttle/${selectedShuttle._id}`,
-          {
-            shuttleNumber: formData.shuttleNumber,
-            capacity: parseInt(formData.capacity),
-            currentRoute: formData.currentRoute || null,
-            active: formData.active,
-            currentLocation: formData.currentLocation,
-          },
+          requestData,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         showSnackbar('Shuttle updated successfully');
@@ -153,52 +224,70 @@ const ManageShuttles = () => {
         // Add new shuttle
         await axios.post(
           `${API_BASE_URL}/shuttle`,
-          {
-            shuttleNumber: formData.shuttleNumber,
-            capacity: parseInt(formData.capacity),
-            currentRoute: formData.currentRoute || null,
-            active: formData.active,
-            currentLocation: formData.currentLocation,
-          },
+          requestData,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         showSnackbar('Shuttle added successfully');
       }
+      
       setDialogOpen(false);
       fetchShuttles();
     } catch (error) {
-      showSnackbar('Error saving shuttle', 'error');
+      console.error('Error saving shuttle:', error);
+      const message = error.response?.data?.msg || 'Error saving shuttle';
+      showSnackbar(message, 'error');
+    } finally {
+      setOperationLoading(false);
     }
   };
 
   // Delete shuttle
   const confirmDelete = async () => {
+    setOperationLoading(true);
     try {
       const token = localStorage.getItem("token");
+      if (!token) {
+        showSnackbar('Authentication token not found', 'error');
+        return;
+      }
+
       await axios.delete(`${API_BASE_URL}/shuttle/${selectedShuttle._id}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      
       setDeleteDialogOpen(false);
       showSnackbar('Shuttle deleted successfully');
       fetchShuttles();
     } catch (error) {
-      showSnackbar('Error deleting shuttle', 'error');
+      console.error('Error deleting shuttle:', error);
+      const message = error.response?.data?.msg || 'Error deleting shuttle';
+      showSnackbar(message, 'error');
+    } finally {
+      setOperationLoading(false);
     }
   };
 
   // Toggle shuttle status
-  const toggleShuttleStatus = async (shuttleId) => {
+  const toggleShuttleStatus = async (shuttleId, currentStatus) => {
     try {
       const token = localStorage.getItem("token");
+      if (!token) {
+        showSnackbar('Authentication token not found', 'error');
+        return;
+      }
+
       await axios.patch(
         `${API_BASE_URL}/shuttle/${shuttleId}/status`,
-        {},
+        { active: !currentStatus },
         { headers: { Authorization: `Bearer ${token}` } }
       );
+      
       showSnackbar('Shuttle status updated');
       fetchShuttles();
     } catch (error) {
-      showSnackbar('Error updating shuttle status', 'error');
+      console.error('Error updating shuttle status:', error);
+      const message = error.response?.data?.msg || 'Error updating shuttle status';
+      showSnackbar(message, 'error');
     }
   };
 
@@ -207,6 +296,14 @@ const ManageShuttles = () => {
     if (percentage >= 90) return 'error';
     if (percentage >= 70) return 'warning';
     return 'success';
+  };
+
+  const handleFormChange = (field, value) => {
+    setFormData(prev => ({ ...prev, [field]: value }));
+    // Clear specific field error when user starts typing
+    if (formErrors[field]) {
+      setFormErrors(prev => ({ ...prev, [field]: '' }));
+    }
   };
 
   if (loading) {
@@ -229,6 +326,7 @@ const ManageShuttles = () => {
             variant="outlined"
             startIcon={<RefreshIcon />}
             onClick={fetchShuttles}
+            disabled={loading}
           >
             Refresh
           </Button>
@@ -300,7 +398,7 @@ const ManageShuttles = () => {
                 <PeopleIcon color="warning" fontSize="large" />
                 <Box>
                   <Typography variant="h6">
-                    {shuttles.reduce((sum, s) => sum + s.occupancy, 0)}
+                    {shuttles.reduce((sum, s) => sum + (s.occupancy || 0), 0)}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
                     Current Occupancy
@@ -315,99 +413,118 @@ const ManageShuttles = () => {
       {/* Shuttles Table */}
       <Card>
         <CardContent>
-          <TableContainer component={Paper}>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Shuttle Number</TableCell>
-                  <TableCell>Capacity</TableCell>
-                  <TableCell>Current Route</TableCell>
-                  <TableCell>Location</TableCell>
-                  <TableCell>Occupancy</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Actions</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {shuttles.map((shuttle) => (
-                  <TableRow key={shuttle._id}>
-                    <TableCell>
-                      <Box display="flex" alignItems="center" gap={1}>
-                        <BusIcon color="primary" />
-                        <Typography fontWeight="medium">
-                          {shuttle.shuttleNumber}
-                        </Typography>
-                      </Box>
-                    </TableCell>
-                    <TableCell>{shuttle.capacity}</TableCell>
-                    <TableCell>
-                      {shuttle.currentRoute ? (
+          {shuttles.length === 0 ? (
+            <Box display="flex" flexDirection="column" alignItems="center" py={4}>
+              <BusIcon sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
+              <Typography variant="h6" color="text.secondary" gutterBottom>
+                No shuttles found
+              </Typography>
+              <Typography variant="body2" color="text.secondary" mb={2}>
+                Start by adding your first shuttle to the system
+              </Typography>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={handleAddShuttle}
+              >
+                Add First Shuttle
+              </Button>
+            </Box>
+          ) : (
+            <TableContainer component={Paper}>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Shuttle Number</TableCell>
+                    <TableCell>Capacity</TableCell>
+                    <TableCell>Current Route</TableCell>
+                    <TableCell>Location</TableCell>
+                    <TableCell>Occupancy</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {shuttles.map((shuttle) => (
+                    <TableRow key={shuttle._id}>
+                      <TableCell>
+                        <Box display="flex" alignItems="center" gap={1}>
+                          <BusIcon color="primary" />
+                          <Typography fontWeight="medium">
+                            {shuttle.shuttleNumber}
+                          </Typography>
+                        </Box>
+                      </TableCell>
+                      <TableCell>{shuttle.capacity}</TableCell>
+                      <TableCell>
+                        {shuttle.currentRoute ? (
+                          <Chip
+                            icon={<RouteIcon />}
+                            label={shuttle.currentRoute.name}
+                            variant="outlined"
+                            size="small"
+                          />
+                        ) : (
+                          <Typography color="text.secondary">No route</Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Box display="flex" alignItems="center" gap={1}>
+                          <LocationIcon fontSize="small" color="action" />
+                          {shuttle.currentLocation || 'Unknown'}
+                        </Box>
+                      </TableCell>
+                      <TableCell>
                         <Chip
-                          icon={<RouteIcon />}
-                          label={shuttle.currentRoute.name}
-                          variant="outlined"
+                          label={`${shuttle.occupancy || 0}/${shuttle.capacity}`}
+                          color={getOccupancyColor(shuttle.occupancy || 0, shuttle.capacity)}
                           size="small"
                         />
-                      ) : (
-                        <Typography color="text.secondary">No route</Typography>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Box display="flex" alignItems="center" gap={1}>
-                        <LocationIcon fontSize="small" color="action" />
-                        {shuttle.currentLocation || 'Unknown'}
-                      </Box>
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        label={`${shuttle.occupancy}/${shuttle.capacity}`}
-                        color={getOccupancyColor(shuttle.occupancy, shuttle.capacity)}
-                        size="small"
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <FormControlLabel
-                        control={
-                          <Switch
-                            checked={shuttle.active}
-                            onChange={() => toggleShuttleStatus(shuttle._id)}
-                          />
-                        }
-                        label={shuttle.active ? 'Active' : 'Inactive'}
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <Box display="flex" gap={1}>
-                        <Tooltip title="Edit">
-                          <IconButton
-                            onClick={() => handleEditShuttle(shuttle)}
-                            color="primary"
-                          >
-                            <EditIcon />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Delete">
-                          <IconButton
-                            onClick={() => handleDeleteShuttle(shuttle)}
-                            color="error"
-                          >
-                            <DeleteIcon />
-                          </IconButton>
-                        </Tooltip>
-                      </Box>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                      </TableCell>
+                      <TableCell>
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              checked={shuttle.active}
+                              onChange={() => toggleShuttleStatus(shuttle._id, shuttle.active)}
+                            />
+                          }
+                          label={shuttle.active ? 'Active' : 'Inactive'}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Box display="flex" gap={1}>
+                          <Tooltip title="Edit">
+                            <IconButton
+                              onClick={() => handleEditShuttle(shuttle)}
+                              color="primary"
+                            >
+                              <EditIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Delete">
+                            <IconButton
+                              onClick={() => handleDeleteShuttle(shuttle)}
+                              color="error"
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
         </CardContent>
       </Card>
 
       {/* Add/Edit Dialog */}
       <Dialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={handleCloseDialog}
         maxWidth="md"
         fullWidth
       >
@@ -419,23 +536,28 @@ const ManageShuttles = () => {
             <TextField
               label="Shuttle Number"
               value={formData.shuttleNumber}
-              onChange={(e) => setFormData({ ...formData, shuttleNumber: e.target.value })}
+              onChange={(e) => handleFormChange('shuttleNumber', e.target.value)}
               required
               fullWidth
+              error={!!formErrors.shuttleNumber}
+              helperText={formErrors.shuttleNumber}
             />
             <TextField
               label="Capacity"
               type="number"
               value={formData.capacity}
-              onChange={(e) => setFormData({ ...formData, capacity: e.target.value })}
+              onChange={(e) => handleFormChange('capacity', e.target.value)}
               required
               fullWidth
+              error={!!formErrors.capacity}
+              helperText={formErrors.capacity}
+              inputProps={{ min: 1 }}
             />
             <FormControl fullWidth>
               <InputLabel>Current Route</InputLabel>
               <Select
                 value={formData.currentRoute}
-                onChange={(e) => setFormData({ ...formData, currentRoute: e.target.value })}
+                onChange={(e) => handleFormChange('currentRoute', e.target.value)}
                 label="Current Route"
               >
                 <MenuItem value="">
@@ -451,14 +573,14 @@ const ManageShuttles = () => {
             <TextField
               label="Current Location"
               value={formData.currentLocation}
-              onChange={(e) => setFormData({ ...formData, currentLocation: e.target.value })}
+              onChange={(e) => handleFormChange('currentLocation', e.target.value)}
               fullWidth
             />
             <FormControlLabel
               control={
                 <Switch
                   checked={formData.active}
-                  onChange={(e) => setFormData({ ...formData, active: e.target.checked })}
+                  onChange={(e) => handleFormChange('active', e.target.checked)}
                 />
               }
               label="Active"
@@ -466,9 +588,19 @@ const ManageShuttles = () => {
           </Box>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
-          <Button onClick={handleSubmit} variant="contained">
-            {editMode ? 'Update' : 'Add'} Shuttle
+          <Button onClick={handleCloseDialog} disabled={operationLoading}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleSubmit} 
+            variant="contained"
+            disabled={operationLoading}
+          >
+            {operationLoading ? (
+              <CircularProgress size={20} />
+            ) : (
+              `${editMode ? 'Update' : 'Add'} Shuttle`
+            )}
           </Button>
         </DialogActions>
       </Dialog>
@@ -486,9 +618,16 @@ const ManageShuttles = () => {
           </Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
-          <Button onClick={confirmDelete} color="error" variant="contained">
-            Delete
+          <Button onClick={() => setDeleteDialogOpen(false)} disabled={operationLoading}>
+            Cancel
+          </Button>
+          <Button 
+            onClick={confirmDelete} 
+            color="error" 
+            variant="contained"
+            disabled={operationLoading}
+          >
+            {operationLoading ? <CircularProgress size={20} /> : 'Delete'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -497,10 +636,10 @@ const ManageShuttles = () => {
       <Snackbar
         open={snackbar.open}
         autoHideDuration={6000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        onClose={handleCloseSnackbar}
       >
         <Alert
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
+          onClose={handleCloseSnackbar}
           severity={snackbar.severity}
           sx={{ width: '100%' }}
         >
